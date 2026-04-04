@@ -131,7 +131,7 @@ export default function App() {
       <header className="h-14 shrink-0 border-b flex items-center justify-between gap-4 px-4">
         <div className="flex items-center gap-2 min-w-0">
           <Bot className="size-6 shrink-0 text-primary" aria-hidden />
-          <span className="font-semibold tracking-tight truncate">协作助手</span>
+          <span className="font-semibold tracking-tight truncate">智能助手</span>
         </div>
         <Button
           type="button"

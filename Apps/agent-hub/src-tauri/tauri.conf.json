@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "协作助手",
+        "title": "智能助手",
         "width": 800,
         "height": 600,
         "resizable": true,
