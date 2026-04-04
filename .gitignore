@@ -1,0 +1,31 @@
+# 依赖与构建产物
+**/node_modules/
+**/dist/
+**/dist-ssr/
+
+# Rust / Tauri
+**/target/
+Apps/agent-hub/src-tauri/gen/schemas/
+
+# 环境与会话（勿提交密钥）
+.env
+.env.*
+!.env.example
+
+# 日志与调试
+*.log
+pnpm-debug.log*
+npm-debug.log*
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 本地 SQLite（若在仓库内调试生成）
+*.db
