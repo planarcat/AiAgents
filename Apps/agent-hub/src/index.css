@@ -2,50 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 主壳不滚动，仅对话区等内部 ScrollArea 出现滚动条 */
+html,
+body,
+#root {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.5rem;
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 35% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 30% 96%;
+    --muted-foreground: 215 16% 45%;
+    --accent: 210 38% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;
+    --radius: 0.75rem;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 25% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 25% 15%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 25% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 25% 18%;
+    --input: 217 25% 18%;
+    --ring: 217 91% 60%;
   }
 
   * {
@@ -53,6 +62,21 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer utilities {
+  /* 轻量出现动画：供列表项等复用 */
+  .animate-enter {
+    @apply motion-reduce:animate-none animate-in fade-in-0 slide-in-from-bottom-1 duration-200 ease-out;
+  }
+
+  .animate-enter-subtle {
+    @apply motion-reduce:animate-none animate-in fade-in-0 zoom-in-[0.99] duration-300 ease-out;
   }
 }

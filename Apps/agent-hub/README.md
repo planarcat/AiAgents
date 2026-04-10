@@ -2,7 +2,7 @@
 
 跨平台桌面端多 Agent 协作应用（Tauri 2 · React · shadcn/ui · Tailwind）。产品方案见仓库内：
 
-`Plans/2026040401/执行方案.md`
+`Plans/2026040401/执行方案（已执行）.md`
 
 **包管理器：pnpm**（见仓库根 `packageManager` 字段与 `pnpm-lock.yaml`）。
 

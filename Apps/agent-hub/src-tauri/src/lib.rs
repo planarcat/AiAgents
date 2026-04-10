@@ -19,11 +19,19 @@ pub fn run() {
       hub::hub_health,
       hub::hub_db_ping,
       hub::agents::agents_list,
+      hub::agents::agents_get,
       hub::agents::agents_create,
+      hub::agents::agents_create_default_template,
+      hub::agents::agents_delete,
+      hub::agents::agents_update,
       hub::agents::agents_import_bulk,
-      hub::settings::settings_api_key_configured,
-      hub::settings::settings_save_api_key,
-      hub::settings::settings_clear_api_key,
+      hub::chat::conversations_ensure,
+      hub::chat::conversations_set_llm_preset,
+      hub::chat::messages_list,
+      hub::chat::chat_send,
+      hub::settings::settings_llm_key_configured,
+      hub::settings::settings_save_llm_key,
+      hub::settings::settings_clear_llm_key,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
