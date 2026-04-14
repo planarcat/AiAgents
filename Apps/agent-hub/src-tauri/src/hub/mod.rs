@@ -3,6 +3,8 @@
 pub mod agents;
 pub mod chat;
 pub mod settings;
+pub mod skill_dispatch;
+pub mod skills;
 
 // 占位：M3 MCP 接入时使用；避免被 Cargo 视为未使用依赖（版本随 Plan §2.1）。
 use rmcp as _;

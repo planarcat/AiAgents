@@ -5,15 +5,21 @@ use sqlx::SqlitePool;
 use tauri::State;
 use uuid::Uuid;
 
+use std::collections::HashSet;
+
+use super::chat::insert_tools_changed_notices_for_agent;
+use super::skills::{
+    merge_and_validate_skill_ids, replace_agent_skills, replace_agent_skills_tx,
+};
 use super::HubState;
 
+#[allow(dead_code)]
 pub const SKILL_DELEGATE_ID: &str = "skill-builtin-delegate";
-pub const SKILL_HONESTY_ID: &str = "skill-builtin-honesty";
 
 /// 与首装、默认模板按钮共用的人设（Plans/2026040402）
 pub const DEFAULT_TEMPLATE_DISPLAY_NAME: &str = "助手";
-pub const DEFAULT_TEMPLATE_SYSTEM_PROMPT: &str = r#"你是用户身边的智能助手。当用户提出需求时，如实作答；若你无法可靠完成（缺信息、缺权限、超出能力），请先使用 honesty_acknowledge 说明限制，不要编造。
-当确有需要由其他助手协作且当前策略允许委派时，可使用 request_agent_help；若委派不可用，请向用户说明原因。"#;
+pub const DEFAULT_TEMPLATE_SYSTEM_PROMPT: &str = r#"你是用户身边的智能助手。当用户提出需求时，如实作答。诚实与工具边界由系统每轮内置说明约束。
+当确有需要由其他助手协作且已在左侧装载「事务委派」能力时，可使用 request_agent_help；若委派不可用，请向用户说明原因。"#;
 
 #[derive(serde::Serialize)]
 pub struct AgentSummary {
@@ -23,6 +29,12 @@ pub struct AgentSummary {
     pub accepts_incoming_delegation: bool,
 }
 
+/// [`agents_update`] 返回值：前端据此决定是否在保存后提示「全量压缩上下文」。
+#[derive(serde::Serialize)]
+pub struct AgentUpdateResult {
+    pub skills_changed: bool,
+}
+
 #[derive(serde::Serialize)]
 pub struct AgentDetail {
     pub id: String,
@@ -30,6 +42,8 @@ pub struct AgentDetail {
     pub system_prompt: String,
     pub allows_outgoing_delegation: bool,
     pub accepts_incoming_delegation: bool,
+    /// 已绑定的能力 id。
+    pub skill_ids: Vec<String>,
 }
 
 /// 首装方案 B：`app_meta` + 与默认模板相同的 `create_agent` 路径（Plans/2026040402 §2）。
@@ -54,18 +68,25 @@ pub async fn ensure_first_default_template(pool: &SqlitePool) -> Result<(), sqlx
         return Ok(());
     }
 
+    let merged = merge_and_validate_skill_ids(pool, &[]).await.map_err(|e| {
+        sqlx::Error::Configuration(format!("skills: {e}").into())
+    })?;
+    let allows_out = merged.iter().any(|s| s == SKILL_DELEGATE_ID);
     let mut tx = pool.begin().await?;
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"INSERT INTO agents (id, display_name, system_prompt, allows_outgoing_delegation, accepts_incoming_delegation)
-        VALUES (?, ?, ?, 1, 1)"#,
+        VALUES (?, ?, ?, ?, 1)"#,
     )
     .bind(&id)
     .bind(DEFAULT_TEMPLATE_DISPLAY_NAME)
     .bind(DEFAULT_TEMPLATE_SYSTEM_PROMPT)
+    .bind(if allows_out { 1i64 } else { 0 })
     .execute(tx.as_mut())
     .await?;
-    attach_necessary_skills_tx(&mut tx, &id).await?;
+    replace_agent_skills_tx(&mut tx, &id, &merged)
+        .await
+        .map_err(|e| sqlx::Error::Configuration(e.into()))?;
     sqlx::query(
         "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('first_default_template_applied', '1')",
     )
@@ -75,28 +96,17 @@ pub async fn ensure_first_default_template(pool: &SqlitePool) -> Result<(), sqlx
     Ok(())
 }
 
-async fn attach_necessary_skills_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    agent_id: &str,
-) -> Result<(), sqlx::Error> {
-    use sqlx::Acquire;
-    let conn = tx.acquire().await?;
-    for sid in [SKILL_DELEGATE_ID, SKILL_HONESTY_ID] {
-        sqlx::query("INSERT OR IGNORE INTO agent_skills (agent_id, skill_id) VALUES (?, ?)")
-            .bind(agent_id)
-            .bind(sid)
-            .execute(&mut *conn)
-            .await?;
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn agents_list(state: State<'_, HubState>) -> Result<Vec<AgentSummary>, String> {
     let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-        "SELECT id, display_name, allows_outgoing_delegation, accepts_incoming_delegation \
-         FROM agents ORDER BY datetime(created_at) ASC",
+        r#"SELECT a.id, a.display_name,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM agent_skills s WHERE s.agent_id = a.id AND s.skill_id = ?
+          ) THEN 1 ELSE 0 END,
+          a.accepts_incoming_delegation
+         FROM agents a ORDER BY datetime(a.created_at) ASC"#,
     )
+    .bind(SKILL_DELEGATE_ID)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -113,23 +123,32 @@ pub async fn agents_list(state: State<'_, HubState>) -> Result<Vec<AgentSummary>
 
 #[tauri::command]
 pub async fn agents_get(state: State<'_, HubState>, id: String) -> Result<AgentDetail, String> {
-    let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT id, display_name, system_prompt, allows_outgoing_delegation, accepts_incoming_delegation \
+    let row: Option<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, display_name, system_prompt, accepts_incoming_delegation \
          FROM agents WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| e.to_string())?;
-    let Some((id, display_name, system_prompt, ao, ai)) = row else {
+    let Some((id, display_name, system_prompt, ai)) = row else {
         return Err("助手不存在".into());
     };
+    let skill_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT skill_id FROM agent_skills WHERE agent_id = ? ORDER BY skill_id ASC",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let allows_out = skill_ids.iter().any(|s| s == SKILL_DELEGATE_ID);
     Ok(AgentDetail {
         id,
         display_name,
         system_prompt,
-        allows_outgoing_delegation: ao != 0,
+        allows_outgoing_delegation: allows_out,
         accepts_incoming_delegation: ai != 0,
+        skill_ids,
     })
 }
 
@@ -138,6 +157,7 @@ pub async fn agents_create(
     state: State<'_, HubState>,
     display_name: String,
     system_prompt: String,
+    skill_ids: Option<Vec<String>>,
 ) -> Result<String, String> {
     let display_name = display_name.trim();
     if display_name.is_empty() {
@@ -150,21 +170,23 @@ pub async fn agents_create(
     } else {
         prompt
     };
+    let user_skills: Vec<String> = skill_ids.unwrap_or_default();
+    let merged = merge_and_validate_skill_ids(&state.pool, &user_skills).await?;
+    let allows_out = merged.iter().any(|s| s == SKILL_DELEGATE_ID);
 
     let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query(
         r#"INSERT INTO agents (id, display_name, system_prompt, allows_outgoing_delegation, accepts_incoming_delegation)
-        VALUES (?, ?, ?, 1, 1)"#,
+        VALUES (?, ?, ?, ?, 1)"#,
     )
     .bind(&id)
     .bind(display_name)
     .bind(prompt)
+    .bind(if allows_out { 1i64 } else { 0 })
     .execute(tx.as_mut())
     .await
     .map_err(|e| e.to_string())?;
-    attach_necessary_skills_tx(&mut tx, &id)
-        .await
-        .map_err(|e| e.to_string())?;
+    replace_agent_skills_tx(&mut tx, &id, &merged).await?;
     tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(id)
@@ -173,21 +195,22 @@ pub async fn agents_create(
 /// 与首装、内部 `ensure_first_default_template` 使用相同默认文案与必要 Skills。
 #[tauri::command]
 pub async fn agents_create_default_template(state: State<'_, HubState>) -> Result<String, String> {
+    let merged = merge_and_validate_skill_ids(&state.pool, &[]).await?;
+    let allows_out = merged.iter().any(|s| s == SKILL_DELEGATE_ID);
     let id = Uuid::new_v4().to_string();
     let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query(
         r#"INSERT INTO agents (id, display_name, system_prompt, allows_outgoing_delegation, accepts_incoming_delegation)
-        VALUES (?, ?, ?, 1, 1)"#,
+        VALUES (?, ?, ?, ?, 1)"#,
     )
     .bind(&id)
     .bind(DEFAULT_TEMPLATE_DISPLAY_NAME)
     .bind(DEFAULT_TEMPLATE_SYSTEM_PROMPT)
+    .bind(if allows_out { 1i64 } else { 0 })
     .execute(tx.as_mut())
     .await
     .map_err(|e| e.to_string())?;
-    attach_necessary_skills_tx(&mut tx, &id)
-        .await
-        .map_err(|e| e.to_string())?;
+    replace_agent_skills_tx(&mut tx, &id, &merged).await?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -211,9 +234,9 @@ pub async fn agents_update(
     id: String,
     display_name: String,
     system_prompt: String,
-    allows_outgoing_delegation: bool,
     accepts_incoming_delegation: bool,
-) -> Result<(), String> {
+    skill_ids: Vec<String>,
+) -> Result<AgentUpdateResult, String> {
     let display_name = display_name.trim();
     if display_name.is_empty() {
         return Err("名称不能为空".into());
@@ -224,12 +247,26 @@ pub async fn agents_update(
     } else {
         prompt
     };
+    let merged = merge_and_validate_skill_ids(&state.pool, &skill_ids).await?;
+    let allows_out = merged.iter().any(|s| s == SKILL_DELEGATE_ID);
+
+    let old_skills: Vec<String> = sqlx::query_scalar(
+        "SELECT skill_id FROM agent_skills WHERE agent_id = ? ORDER BY skill_id",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let old_set: HashSet<String> = old_skills.into_iter().collect();
+    let new_set: HashSet<String> = merged.iter().cloned().collect();
+    let skills_changed = old_set != new_set;
+
     let r = sqlx::query(
         "UPDATE agents SET display_name = ?, system_prompt = ?, allows_outgoing_delegation = ?, accepts_incoming_delegation = ? WHERE id = ?",
     )
     .bind(display_name)
     .bind(prompt)
-    .bind(if allows_outgoing_delegation { 1i64 } else { 0 })
+    .bind(if allows_out { 1i64 } else { 0 })
     .bind(if accepts_incoming_delegation { 1i64 } else { 0 })
     .bind(&id)
     .execute(&state.pool)
@@ -238,7 +275,11 @@ pub async fn agents_update(
     if r.rows_affected() == 0 {
         return Err("助手不存在".into());
     }
-    Ok(())
+    replace_agent_skills(&state.pool, &id, &merged).await?;
+    if skills_changed {
+        insert_tools_changed_notices_for_agent(&state.pool, &id).await?;
+    }
+    Ok(AgentUpdateResult { skills_changed })
 }
 
 #[derive(Deserialize)]
@@ -255,6 +296,8 @@ pub async fn agents_import_bulk(state: State<'_, HubState>, json: String) -> Res
         return Err("文件中没有可导入的助手".into());
     }
 
+    let merged = merge_and_validate_skill_ids(&state.pool, &[]).await?;
+    let allows_out = merged.iter().any(|s| s == SKILL_DELEGATE_ID);
     let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
     let mut n: u32 = 0;
     for item in items {
@@ -276,17 +319,16 @@ pub async fn agents_import_bulk(state: State<'_, HubState>, json: String) -> Res
         };
         sqlx::query(
             r#"INSERT INTO agents (id, display_name, system_prompt, allows_outgoing_delegation, accepts_incoming_delegation)
-            VALUES (?, ?, ?, 1, 1)"#,
+            VALUES (?, ?, ?, ?, 1)"#,
         )
         .bind(&id)
         .bind(name)
         .bind(&prompt)
+        .bind(if allows_out { 1i64 } else { 0 })
         .execute(tx.as_mut())
         .await
         .map_err(|e| e.to_string())?;
-        attach_necessary_skills_tx(&mut tx, &id)
-            .await
-            .map_err(|e| e.to_string())?;
+        replace_agent_skills_tx(&mut tx, &id, &merged).await?;
         n += 1;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
